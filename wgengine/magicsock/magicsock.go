@@ -1269,6 +1269,26 @@ func (c *Conn) RotateDiscoKey() {
 	}
 }
 
+// endpointPortForAddr returns the local UDP port to advertise for an interface
+// address of the given family.
+//
+// pconn4 and pconn6 are bound independently and may end up on different local
+// ports (for example, when Tailscale's default port 41641 is already in use,
+// or when a platform only allows binding one of the two families to it). Local
+// interface addresses must therefore be advertised with the port of the socket
+// that actually handles that address family. Using the IPv4 socket's port for
+// IPv6 addresses would advertise a port with no IPv6 listener, so peers'
+// direct IPv6 probes would be silently dropped.
+func endpointPortForAddr(ip netip.Addr, port4, port6 uint16) (port uint16, ok bool) {
+	if ip.Unmap().Is4() {
+		return port4, port4 != 0
+	}
+	if ip.Is6() {
+		return port6, port6 != 0
+	}
+	return 0, false
+}
+
 // determineEndpoints returns the machine's endpoint addresses. It does a STUN
 // lookup (via netcheck) to determine its public address. Additionally, any
 // static endpoints provided by user are always added to the returned endpoints
@@ -1416,8 +1436,17 @@ func (c *Conn) determineEndpoints(ctx context.Context) ([]tailcfg.Endpoint, erro
 			// offline, for example.
 			ips = loopback
 		}
+		port4 := uint16(localAddr.Port)
+		var port6 uint16
+		if addr6 := c.pconn6.LocalAddr(); addr6 != nil {
+			port6 = uint16(addr6.Port)
+		}
 		for _, ip := range ips {
-			addAddr(netip.AddrPortFrom(ip, uint16(localAddr.Port)), tailcfg.EndpointLocal)
+			port, ok := endpointPortForAddr(ip, port4, port6)
+			if !ok {
+				continue
+			}
+			addAddr(netip.AddrPortFrom(ip, port), tailcfg.EndpointLocal)
 		}
 	} else {
 		// Our local endpoint is bound to a particular address.
